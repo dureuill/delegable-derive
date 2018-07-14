@@ -11,10 +11,10 @@ use proc_macro::TokenStream;
 use std::borrow::Borrow;
 use std::iter::FromIterator;
 
-fn impl_delegable_impl(impl_item : &syn::ItemImpl) -> quote::Tokens {
+fn impl_delegable_impl(impl_item: &syn::ItemImpl) -> quote::Tokens {
     let btype = impl_item.self_ty.borrow();
     if let syn::Type::Verbatim(ty) = btype {
-        let name : syn::Ident = syn::parse2(ty.tts.clone()).expect("Expected identifier.");
+        let name: syn::Ident = syn::parse2(ty.tts.clone()).expect("Expected identifier.");
         let mut methods = quote::Tokens::new();
         for item in &impl_item.items {
             if let syn::ImplItem::Method(ref item_method) = item {
@@ -28,22 +28,23 @@ fn impl_delegable_impl(impl_item : &syn::ItemImpl) -> quote::Tokens {
 }
 
 fn quote_delegable(name: &syn::Ident, methods: &quote::Tokens) -> quote::Tokens {
+    let s : &str = &format!("delegate_{}", name);
+    let delegate_name = syn::Ident::from(s);
     quote! {
-        pub mod delegate {
-            pub trait #name {
-                type Inner : super::#name;
-                fn inner(&self) -> &Self::Inner;
+        #[allow(non_camel_case_types)]
+        pub trait #delegate_name {
+            type Inner : #name;
+            fn inner(&self) -> &Self::Inner;
 
-                fn inner_mut(&mut self) -> &mut Self::Inner;
+            fn inner_mut(&mut self) -> &mut Self::Inner;
 
-                fn into_inner(self) -> Self::Inner;
+            fn into_inner(self) -> Self::Inner;
 
-                fn from_inner(delegate : Self::Inner) -> Self;
-            }
+            fn from_inner(delegate : Self::Inner) -> Self;
+        }
 
-            impl<Proxy : #name> super::#name for Proxy {
-                #methods
-            }
+        impl<Proxy : #delegate_name> #name for Proxy {
+            #methods
         }
     }
 }
@@ -54,36 +55,30 @@ enum FirstArg {
     MutSelfValue,
     SelfRef,
     MutSelfRef,
-    NotSelf
+    NotSelf,
 }
 
-fn arg_self_kind(arg : Option<&syn::FnArg>) -> FirstArg {
+fn arg_self_kind(arg: Option<&syn::FnArg>) -> FirstArg {
     match arg {
-        Some(fn_arg) => {
-            match fn_arg {
-                syn::FnArg::SelfRef(arg) => {
-                    match arg.mutability {
-                        Some(_) => FirstArg::MutSelfRef,
-                        None => FirstArg::SelfRef
-                    }
-                },
-                syn::FnArg::SelfValue(arg) => {
-                    match arg.mutability {
-                        Some(_) => FirstArg::MutSelfValue,
-                        None => FirstArg::SelfValue
-                    }
-                },
-                _ => {
-                    FirstArg::NotSelf
-                }  
-            }
+        Some(fn_arg) => match fn_arg {
+            syn::FnArg::SelfRef(arg) => match arg.mutability {
+                Some(_) => FirstArg::MutSelfRef,
+                None => FirstArg::SelfRef,
+            },
+            syn::FnArg::SelfValue(arg) => match arg.mutability {
+                Some(_) => FirstArg::MutSelfValue,
+                None => FirstArg::SelfValue,
+            },
+            _ => FirstArg::NotSelf,
         },
-        None => FirstArg::NotSelf
+        None => FirstArg::NotSelf,
     }
 }
 
-fn get_call_args(first_arg : FirstArg, args : &syn::punctuated::Punctuated<syn::FnArg, Token!(,)>) 
--> syn::punctuated::Punctuated<syn::Ident, &Token!(,)> {
+fn get_call_args(
+    first_arg: FirstArg,
+    args: &syn::punctuated::Punctuated<syn::FnArg, Token!(,)>,
+) -> syn::punctuated::Punctuated<syn::Ident, &Token!(,)> {
     let it = args.pairs();
     let it = if first_arg != FirstArg::NotSelf {
         // skip "self" in the call
@@ -94,20 +89,16 @@ fn get_call_args(first_arg : FirstArg, args : &syn::punctuated::Punctuated<syn::
 
     let it = it.map(|pair| {
         use syn::punctuated::Pair;
-        let to_ident = |ref arg: &syn::FnArg| { 
-            match arg {
-                syn::FnArg::Captured(ref captured) => {
-                    match captured.pat {
-                        syn::Pat::Ident(ref pat_ident) => { pat_ident.ident.clone() }
-                        _ => panic!("Unsupported argument type!")
-                    }
-                },
-                _ => panic!("Unsupported argument type!")
-            }
+        let to_ident = |ref arg: &syn::FnArg| match arg {
+            syn::FnArg::Captured(ref captured) => match captured.pat {
+                syn::Pat::Ident(ref pat_ident) => pat_ident.ident.clone(),
+                _ => panic!("Unsupported argument type!"),
+            },
+            _ => panic!("Unsupported argument type!"),
         };
         match pair {
             Pair::Punctuated(arg, p) => Pair::Punctuated(to_ident(arg), p),
-            Pair::End(arg) => Pair::End(to_ident(arg))
+            Pair::End(arg) => Pair::End(to_ident(arg)),
         }
     });
     syn::punctuated::Punctuated::<syn::Ident, &Token!(,)>::from_iter(it)
@@ -136,7 +127,7 @@ fn wrap_from_inner(implem_tokens: quote::Tokens, output: &syn::ReturnType) -> qu
     }
 }
 
-fn add_method(type_name: &syn::Ident, sig : &syn::MethodSig) -> quote::Tokens {
+fn add_method(type_name: &syn::Ident, sig: &syn::MethodSig) -> quote::Tokens {
     let first_arg = arg_self_kind(sig.decl.inputs.iter().next());
     let arg_without_self = get_call_args(first_arg, &sig.decl.inputs);
     let method_name = sig.ident;
@@ -147,7 +138,7 @@ fn add_method(type_name: &syn::Ident, sig : &syn::MethodSig) -> quote::Tokens {
         FirstArg::SelfValue => quote! { self.into_inner().#method_call },
         FirstArg::MutSelfRef => quote! { self.inner_mut().#method_call },
         FirstArg::SelfRef => quote! { self.inner().#method_call },
-        FirstArg::NotSelf => quote! { #type_name.#method_call }
+        FirstArg::NotSelf => quote! { #type_name.#method_call },
     };
 
     implem_tokens = wrap_from_inner(implem_tokens, &sig.decl.output);
@@ -159,7 +150,7 @@ fn add_method(type_name: &syn::Ident, sig : &syn::MethodSig) -> quote::Tokens {
     }
 }
 
-fn impl_delegable_trait(trait_item : &syn::ItemTrait) -> quote::Tokens {
+fn impl_delegable_trait(trait_item: &syn::ItemTrait) -> quote::Tokens {
     let name = trait_item.ident;
     let mut methods = quote::Tokens::new();
 
@@ -174,10 +165,9 @@ fn impl_delegable_trait(trait_item : &syn::ItemTrait) -> quote::Tokens {
 }
 
 fn impl_delegable(ast: &syn::Item) -> quote::Tokens {
-    let delegable_tokens =
-    match ast {
-        syn::Item::Trait(ref trait_item) => { impl_delegable_trait(trait_item) },
-        syn::Item::Impl(ref impl_item) => { impl_delegable_impl(impl_item) },
+    let delegable_tokens = match ast {
+        syn::Item::Trait(ref trait_item) => impl_delegable_trait(trait_item),
+        syn::Item::Impl(ref impl_item) => impl_delegable_impl(impl_item),
         _ => {
             panic!("This macro can only be applied to a trait or an impl block.");
         }
@@ -190,9 +180,9 @@ fn impl_delegable(ast: &syn::Item) -> quote::Tokens {
 }
 
 #[proc_macro_attribute]
-pub fn delegable(_metadata: TokenStream, input : TokenStream) -> TokenStream {
+pub fn delegable(_metadata: TokenStream, input: TokenStream) -> TokenStream {
     // Parse the string representation
-    let ast : syn::Item = syn::parse(input).expect("failed to parse input.");
+    let ast: syn::Item = syn::parse(input).expect("failed to parse input.");
 
     // Build the impl
     let gen = impl_delegable(&ast);
