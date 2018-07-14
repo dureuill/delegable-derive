@@ -21,19 +21,52 @@ fn impl_delegable_impl(impl_item: &syn::ItemImpl) -> quote::Tokens {
                 methods.append_all(add_method(&name, &item_method.sig));
             }
         }
-        quote_delegable(&name, &methods)
+        quote_delegable(&name, &methods, &syn::Generics::default())
     } else {
         panic!("Expected direct type in type position.");
     }
 }
 
-fn quote_delegable(name: &syn::Ident, methods: &quote::Tokens) -> quote::Tokens {
-    let s : &str = &format!("delegate_{}", name);
+fn quote_generic_types(generics: &syn::Generics) -> (quote::Tokens, quote::Tokens) {
+    let mut associated_types = quote::Tokens::new();
+    let mut associated_types_as_generics = quote::Tokens::new();
+    for generic in &generics.params {
+        if let syn::GenericParam::Type(ty) = generic {
+            let associated_name: &str = &format!("gen_{}", quote! { #ty });
+            let associated_name = syn::Ident::from(associated_name);
+            let associated = quote! {
+                type #associated_name;
+            };
+            associated_types.append_all(associated);
+            associated_types_as_generics =
+                quote! { #associated_types_as_generics Self::#associated_name, };
+        }
+    }
+    (associated_types, quote! { <#associated_types_as_generics> })
+}
+
+fn quote_delegable(
+    name: &syn::Ident,
+    methods: &quote::Tokens,
+    generics: &syn::Generics,
+) -> quote::Tokens {
+    let s: &str = &format!("delegate_{}", name);
     let delegate_name = syn::Ident::from(s);
+
+    let (generic_types_as_associated, associated_as_generic_list) = quote_generic_types(&generics);
+    let generic_types = &generics.params;
+
+    let impl_generic_types = if generic_types.len() != 0 {
+        quote! { #generic_types, Proxy : #delegate_name }
+    } else {
+        quote! { Proxy : #delegate_name }
+    };
+
     quote! {
         #[allow(non_camel_case_types)]
         pub trait #delegate_name {
-            type Inner : #name;
+            #generic_types_as_associated
+            type Inner : #name #associated_as_generic_list;
             fn inner(&self) -> &Self::Inner;
 
             fn inner_mut(&mut self) -> &mut Self::Inner;
@@ -43,7 +76,8 @@ fn quote_delegable(name: &syn::Ident, methods: &quote::Tokens) -> quote::Tokens 
             fn from_inner(delegate : Self::Inner) -> Self;
         }
 
-        impl<Proxy : #delegate_name> #name for Proxy {
+        impl<#impl_generic_types> #name #generics for Proxy
+        where <Proxy as #delegate_name>::Inner : #name #generics {
             #methods
         }
     }
@@ -131,14 +165,19 @@ fn add_method(type_name: &syn::Ident, sig: &syn::MethodSig) -> quote::Tokens {
     let first_arg = arg_self_kind(sig.decl.inputs.iter().next());
     let arg_without_self = get_call_args(first_arg, &sig.decl.inputs);
     let method_name = sig.ident;
-    let method_call = quote! { #method_name(#arg_without_self) };
 
     let mut implem_tokens = match first_arg {
-        FirstArg::MutSelfValue => quote! { self.into_inner().#method_call },
-        FirstArg::SelfValue => quote! { self.into_inner().#method_call },
-        FirstArg::MutSelfRef => quote! { self.inner_mut().#method_call },
-        FirstArg::SelfRef => quote! { self.inner().#method_call },
-        FirstArg::NotSelf => quote! { #type_name.#method_call },
+        FirstArg::MutSelfValue => {
+            quote! { #type_name::#method_name(self.into_inner(), #arg_without_self) }
+        }
+        FirstArg::SelfValue => {
+            quote! {  #type_name::#method_name(self.into_inner(), #arg_without_self) }
+        }
+        FirstArg::MutSelfRef => {
+            quote! {  #type_name::#method_name(self.inner_mut(), #arg_without_self) }
+        }
+        FirstArg::SelfRef => quote! {  #type_name::#method_name(self.inner(), #arg_without_self) },
+        FirstArg::NotSelf => quote! { #type_name.#method_name(#arg_without_self) },
     };
 
     implem_tokens = wrap_from_inner(implem_tokens, &sig.decl.output);
@@ -151,17 +190,18 @@ fn add_method(type_name: &syn::Ident, sig: &syn::MethodSig) -> quote::Tokens {
 }
 
 fn impl_delegable_trait(trait_item: &syn::ItemTrait) -> quote::Tokens {
-    let name = trait_item.ident;
+    let name = &trait_item.ident;
+    let generics = &trait_item.generics;
     let mut methods = quote::Tokens::new();
 
     for item in &trait_item.items {
         if let syn::TraitItem::Method(item_method) = item {
-            methods.append_all(add_method(&name, &item_method.sig));
+            methods.append_all(add_method(name, &item_method.sig));
         }
         // skipping other kinds
     }
 
-    quote_delegable(&name, &methods)
+    quote_delegable(&name, &methods, generics)
 }
 
 fn impl_delegable(ast: &syn::Item) -> quote::Tokens {
