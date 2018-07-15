@@ -8,7 +8,7 @@ Requires nightly.
 
 See the [companion test repository](https://github.com/dureuill/delegate_test).
 
-# Examples
+# Examples
 
 See the [examples directory](examples/), that contains the following examples:
 
